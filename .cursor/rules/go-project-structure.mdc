@@ -1,0 +1,46 @@
+---
+description: Cấu trúc folder và quy ước code cho go_service
+alwaysApply: true
+---
+
+# go_service — Project Structure
+
+## Cấu trúc bắt buộc
+
+```
+cmd/server/main.go          → Entry point, chỉ wiring (config, DB, routes)
+internal/config/            → Config (.env) + MongoDB connection
+internal/middleware/        → HTTP middleware (CORS, auth...)
+internal/routes/            → Đăng ký tất cả routes
+internal/socket/            → WebSocket hub + handler
+internal/handler/           → HTTP handlers (thêm khi có API)
+internal/service/           → Business logic (thêm khi có feature)
+internal/repository/        → MongoDB queries (thêm khi có feature)
+internal/model/             → DB document structs (thêm khi có feature)
+internal/dto/               → Request/response structs (thêm khi có API)
+```
+
+## Quy tắc
+
+- **main.go**: Không viết business logic. Chỉ: load config → connect DB → init services → `routes.Setup()`.
+- **routes**: Mọi endpoint đăng ký trong `internal/routes/routes.go`, không thêm route trực tiếp trong main.
+- **Luồng dữ liệu**: `routes → handler → service → repository → MongoDB`.
+- **WebSocket**: Logic realtime nằm trong `internal/socket/`. Handler gọi service nếu cần lưu DB.
+- **Config**: Biến môi trường đọc qua `config.Load()`, không dùng `os.Getenv` trực tiếp ở handler/service.
+- **Comment**: Viết comment tiếng Việt giải thích mục đích file/function, không comment code hiển nhiên.
+
+## Thêm feature mới
+
+1. `internal/model/` — struct document
+2. `internal/dto/` — struct request/response
+3. `internal/repository/` — CRUD MongoDB
+4. `internal/service/` — business logic
+5. `internal/handler/` — HTTP handler
+6. `internal/routes/routes.go` — đăng ký route
+
+## Không làm
+
+- Không đặt business logic trong `cmd/` hoặc `routes/`
+- Không tạo file test trừ khi user yêu cầu
+- Không thêm dependency không cần thiết
+- Không đổi module name (`go_service`)
