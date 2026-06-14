@@ -15,6 +15,8 @@ Copy `.env.example` thành `.env` và chỉnh theo môi trường:
 PORT=8080
 MONGO_URI=mongodb://localhost:27017
 MONGO_DATABASE=go_service_db
+JWT_SECRET=your-super-secret-key-change-in-production
+JWT_EXPIRE_HOURS=24
 ```
 
 ## Chạy server
@@ -25,10 +27,44 @@ go run cmd/server/main.go
 
 ## Endpoints
 
-| Method | Path   | Mô tả                          |
-|--------|--------|--------------------------------|
-| GET    | /ping  | Health check                   |
-| GET    | /ws    | WebSocket — kết nối realtime   |
+| Method | Path                    | Mô tả                          |
+|--------|-------------------------|--------------------------------|
+| GET    | /ping                   | Health check                   |
+| GET    | /ws                     | WebSocket — kết nối realtime   |
+| POST   | /api/v1/auth/register   | Đăng ký tài khoản              |
+| POST   | /api/v1/auth/login      | Đăng nhập, nhận JWT token      |
+| POST   | /api/v1/auth/logout     | Đăng xuất, vô hiệu hóa token   |
+
+### Auth API
+
+**Đăng ký** — `POST /api/v1/auth/register`
+
+```json
+{
+  "email": "user@example.com",
+  "phone": "0901234567",
+  "password": "123456"
+}
+```
+
+Cần ít nhất `email` hoặc `phone`. Password tối thiểu 6 ký tự.
+
+**Đăng nhập** — `POST /api/v1/auth/login`
+
+```json
+{
+  "identifier": "user@example.com",
+  "password": "123456"
+}
+```
+
+`identifier` có thể là email hoặc số điện thoại.
+
+**Đăng xuất** — `POST /api/v1/auth/logout`
+
+```
+Authorization: Bearer <token>
+```
 
 ---
 
