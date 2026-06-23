@@ -3,6 +3,7 @@ package repository
 
 import (
 	"context"
+	"fmt"
 	"time"
 
 	"go_service/internal/model"
@@ -43,6 +44,16 @@ func (r *UserRepository) Create(ctx context.Context, user *model.User) error {
 func (r *UserRepository) FindByEmail(ctx context.Context, email string) (*model.User, error) {
 	var user model.User
 	err := r.collection.FindOne(ctx, bson.M{"email": email}).Decode(&user)
+	if err != nil {
+		return nil, err
+	}
+	return &user, nil
+}
+
+// FindByID tìm user theo ObjectID.
+func (r *UserRepository) FindByID(ctx context.Context, id primitive.ObjectID) (*model.User, error) {
+	var user model.User
+	err := r.collection.FindOne(ctx, bson.M{"_id": id}).Decode(&user)
 	if err != nil {
 		return nil, err
 	}

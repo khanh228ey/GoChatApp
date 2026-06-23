@@ -11,11 +11,13 @@ import (
 
 // Config lưu toàn bộ cấu hình cần thiết cho server.
 type Config struct {
-	Port           string // Port HTTP server lắng nghe (mặc định: 8080)
-	MongoURI       string // URI kết nối MongoDB (vd: mongodb://localhost:27017)
-	MongoDatabase  string // Tên database sử dụng trong MongoDB
-	JWTSecret      string // Secret key để ký JWT token
-	JWTExpireHours int    // Thời gian hết hạn token (giờ)
+	Port                    string // Port HTTP server lắng nghe (mặc định: 8080)
+	MongoURI                string // URI kết nối MongoDB
+	MongoDatabase           string // Tên database sử dụng trong MongoDB
+	JWTSecret               string // Secret key để ký JWT access token
+	AccessTokenExpireMinutes int   // Thời hạn access token (phút, mặc định: 15)
+	RefreshTokenExpireDays  int    // Thời hạn refresh token (ngày, mặc định: 7)
+	FrontendOrigin          string // Origin cho phép CORS (vd: http://localhost:5173)
 }
 
 // Load đọc file .env và trả về struct Config.
@@ -30,18 +32,32 @@ func Load() *Config {
 		port = "8080"
 	}
 
-	jwtExpireHours := 24
-	if v := os.Getenv("JWT_EXPIRE_HOURS"); v != "" {
+	expireMinutes := 15
+	if v := os.Getenv("ACCESS_TOKEN_EXPIRE_MINUTES"); v != "" {
 		if parsed, err := strconv.Atoi(v); err == nil {
-			jwtExpireHours = parsed
+			expireMinutes = parsed
 		}
 	}
 
+	expireDays := 7
+	if v := os.Getenv("REFRESH_TOKEN_EXPIRE_DAYS"); v != "" {
+		if parsed, err := strconv.Atoi(v); err == nil {
+			expireDays = parsed
+		}
+	}
+
+	frontendOrigin := os.Getenv("FRONTEND_ORIGIN")
+	if frontendOrigin == "" {
+		frontendOrigin = "http://localhost:5173"
+	}
+
 	return &Config{
-		Port:           port,
-		MongoURI:       os.Getenv("MONGO_URI"),
-		MongoDatabase:  os.Getenv("MONGO_DATABASE"),
-		JWTSecret:      os.Getenv("JWT_SECRET"),
-		JWTExpireHours: jwtExpireHours,
+		Port:                    port,
+		MongoURI:                os.Getenv("MONGO_URI"),
+		MongoDatabase:           os.Getenv("MONGO_DATABASE"),
+		JWTSecret:               os.Getenv("JWT_SECRET"),
+		AccessTokenExpireMinutes: expireMinutes,
+		RefreshTokenExpireDays:  expireDays,
+		FrontendOrigin:          frontendOrigin,
 	}
 }

@@ -3,9 +3,10 @@ package service
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
-	"sync"
 	"time"
 
 	"go_service/internal/config"
@@ -19,10 +20,10 @@ import (
 )
 
 var (
-	ErrUserExists       = errors.New("email hoặc số điện thoại đã được sử dụng")
-	ErrInvalidLogin     = errors.New("email/số điện thoại hoặc mật khẩu không đúng")
-	ErrTokenInvalid     = errors.New("token không hợp lệ")
-	ErrTokenBlacklisted = errors.New("token đã bị vô hiệu hóa")
+	ErrUserExists          = errors.New("email đã được sử dụng")
+	ErrInvalidLogin        = errors.New("email hoặc mật khẩu không đúng")
+	ErrTokenInvalid        = errors.New("token không hợp lệ")
+	ErrRefreshTokenExpired = errors.New("refresh token đã hết hạn, vui lòng đăng nhập lại")
 )
 
 type jwtClaims struct {
@@ -30,139 +31,212 @@ type jwtClaims struct {
 	jwt.RegisteredClaims
 }
 
-// AuthService xử lý đăng ký, đăng nhập, đăng xuất với JWT.
+// TokenPair chứa cả access token lẫn refresh token — dùng nội bộ giữa service và handler.
+type TokenPair struct {
+	AccessToken        string
+	RefreshToken       string
+	RefreshTokenExpiry time.Time
+}
+
+// AuthService xử lý đăng ký, đăng nhập, đăng xuất với JWT + Refresh Token.
 type AuthService struct {
-	userRepo   *repository.UserRepository
-	jwtSecret  []byte
-	jwtExpire  time.Duration
-	blacklist  map[string]time.Time // Token đã logout — lưu tạm trong memory
-	blacklistMu sync.RWMutex
+	userRepo            *repository.UserRepository
+	refreshTokenRepo    *repository.RefreshTokenRepository
+	jwtSecret           []byte
+	accessTokenExpire   time.Duration
+	refreshTokenExpire  time.Duration
 }
 
-// NewAuthService tạo service auth, inject repository và config JWT.
-func NewAuthService(userRepo *repository.UserRepository, cfg *config.Config) *AuthService {
+// NewAuthService tạo service auth, inject repository và config.
+func NewAuthService(
+	userRepo *repository.UserRepository,
+	refreshTokenRepo *repository.RefreshTokenRepository,
+	cfg *config.Config,
+) *AuthService {
 	return &AuthService{
-		userRepo:  userRepo,
-		jwtSecret: []byte(cfg.JWTSecret),
-		jwtExpire: time.Duration(cfg.JWTExpireHours) * time.Hour,
-		blacklist: make(map[string]time.Time),
+		userRepo:           userRepo,
+		refreshTokenRepo:   refreshTokenRepo,
+		jwtSecret:          []byte(cfg.JWTSecret),
+		accessTokenExpire:  time.Duration(cfg.AccessTokenExpireMinutes) * time.Minute,
+		refreshTokenExpire: time.Duration(cfg.RefreshTokenExpireDays) * 24 * time.Hour,
 	}
 }
 
-// Register tạo tài khoản mới — email hoặc sdt + mật khẩu.
-func (s *AuthService) Register(ctx context.Context, req *dto.RegisterRequest) (*dto.AuthResponse, error) {
+// Register tạo tài khoản mới — email + mật khẩu.
+func (s *AuthService) Register(ctx context.Context, req *dto.RegisterRequest) (*dto.AuthResponse, *TokenPair, error) {
 	if err := req.Validate(); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	if req.Email != "" {
-		_, err := s.userRepo.FindByEmail(ctx, req.Email)
-		if err == nil {
-			return nil, ErrUserExists
-		}
-		if !errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, err
-		}
+	// Kiểm tra email đã tồn tại chưa
+	_, err := s.userRepo.FindByEmail(ctx, req.Email)
+	if err == nil {
+		return nil, nil, ErrUserExists
 	}
-
-	if req.Phone != "" {
-		_, err := s.userRepo.FindByPhone(ctx, req.Phone)
-		if err == nil {
-			return nil, ErrUserExists
-		}
-		if !errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, err
-		}
+	if !errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, nil, err
 	}
 
 	hashedPassword, err := bcrypt.GenerateFromPassword([]byte(req.Password), bcrypt.DefaultCost)
 	if err != nil {
-		return nil, fmt.Errorf("hash password: %w", err)
+		return nil, nil, fmt.Errorf("hash password: %w", err)
 	}
 
 	user := &model.User{
 		Email:    req.Email,
-		Phone:    req.Phone,
 		Password: string(hashedPassword),
 	}
 
 	if err := s.userRepo.Create(ctx, user); err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
-	token, err := s.generateToken(user.ID.Hex())
+	pair, err := s.generateTokenPair(ctx, user.ID.Hex())
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
 
 	return &dto.AuthResponse{
-		Token: token,
-		User:  toUserResponse(user),
-	}, nil
+		AccessToken: pair.AccessToken,
+		User:        toUserResponse(user),
+	}, pair, nil
 }
 
-// Login xác thực email/sdt + mật khẩu, trả về JWT.
-func (s *AuthService) Login(ctx context.Context, req *dto.LoginRequest) (*dto.AuthResponse, error) {
+// Login xác thực email + mật khẩu, trả về token pair.
+func (s *AuthService) Login(ctx context.Context, req *dto.LoginRequest) (*dto.AuthResponse, *TokenPair, error) {
 	user, err := s.userRepo.FindByEmailOrPhone(ctx, req.Identifier)
 	if err != nil {
 		if errors.Is(err, mongo.ErrNoDocuments) {
-			return nil, ErrInvalidLogin
+			return nil, nil, ErrInvalidLogin
 		}
-		return nil, err
+		return nil, nil, err
 	}
 
 	if err := bcrypt.CompareHashAndPassword([]byte(user.Password), []byte(req.Password)); err != nil {
-		return nil, ErrInvalidLogin
+		return nil, nil, ErrInvalidLogin
 	}
 
-	token, err := s.generateToken(user.ID.Hex())
+	pair, err := s.generateTokenPair(ctx, user.ID.Hex())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &dto.AuthResponse{
+		AccessToken: pair.AccessToken,
+		User:        toUserResponse(user),
+	}, pair, nil
+}
+
+// RefreshToken validate refresh token từ cookie, rotation, trả về token pair mới.
+func (s *AuthService) RefreshToken(ctx context.Context, oldRefreshToken string) (*dto.AuthResponse, *TokenPair, error) {
+	// Tìm refresh token trong DB
+	rt, err := s.refreshTokenRepo.FindByToken(ctx, oldRefreshToken)
+	if err != nil {
+		return nil, nil, ErrTokenInvalid
+	}
+
+	// Kiểm tra hết hạn
+	if time.Now().After(rt.ExpiresAt) {
+		// Xóa token hết hạn
+		_ = s.refreshTokenRepo.DeleteByToken(ctx, oldRefreshToken)
+		return nil, nil, ErrRefreshTokenExpired
+	}
+
+	// Tìm user
+	user, err := s.userRepo.FindByID(ctx, rt.UserID)
+	if err != nil {
+		return nil, nil, ErrTokenInvalid
+	}
+
+	// Rotation: xóa token cũ
+	if err := s.refreshTokenRepo.DeleteByToken(ctx, oldRefreshToken); err != nil {
+		return nil, nil, fmt.Errorf("delete old refresh token: %w", err)
+	}
+
+	// Tạo token pair mới
+	pair, err := s.generateTokenPair(ctx, user.ID.Hex())
+	if err != nil {
+		return nil, nil, err
+	}
+
+	return &dto.AuthResponse{
+		AccessToken: pair.AccessToken,
+		User:        toUserResponse(user),
+	}, pair, nil
+}
+
+// Logout xóa tất cả refresh token của user khỏi DB.
+func (s *AuthService) Logout(ctx context.Context, refreshToken string) error {
+	rt, err := s.refreshTokenRepo.FindByToken(ctx, refreshToken)
+	if err != nil {
+		// Token không tồn tại — vẫn coi là logout thành công
+		return nil
+	}
+	return s.refreshTokenRepo.DeleteByUserID(ctx, rt.UserID)
+}
+
+// generateTokenPair tạo access token (JWT) + refresh token (UUID random), lưu refresh token vào DB.
+func (s *AuthService) generateTokenPair(ctx context.Context, userID string) (*TokenPair, error) {
+	accessToken, err := s.generateAccessToken(userID)
 	if err != nil {
 		return nil, err
 	}
 
-	return &dto.AuthResponse{
-		Token: token,
-		User:  toUserResponse(user),
+	refreshToken, expiresAt, err := s.generateRefreshToken(ctx, userID)
+	if err != nil {
+		return nil, err
+	}
+
+	return &TokenPair{
+		AccessToken:        accessToken,
+		RefreshToken:       refreshToken,
+		RefreshTokenExpiry: expiresAt,
 	}, nil
 }
 
-// Logout vô hiệu hóa token — thêm vào blacklist.
-func (s *AuthService) Logout(token string) error {
-	claims, err := s.parseToken(token)
-	if err != nil {
-		return ErrTokenInvalid
-	}
-
-	s.blacklistMu.Lock()
-	s.blacklist[token] = claims.ExpiresAt.Time
-	s.blacklistMu.Unlock()
-
-	return nil
-}
-
-// IsTokenBlacklisted kiểm tra token đã logout chưa.
-func (s *AuthService) IsTokenBlacklisted(token string) bool {
-	s.blacklistMu.RLock()
-	defer s.blacklistMu.RUnlock()
-	_, exists := s.blacklist[token]
-	return exists
-}
-
-func (s *AuthService) generateToken(userID string) (string, error) {
+// generateAccessToken tạo JWT access token với thời hạn ngắn.
+func (s *AuthService) generateAccessToken(userID string) (string, error) {
 	now := time.Now()
 	claims := jwtClaims{
 		UserID: userID,
 		RegisteredClaims: jwt.RegisteredClaims{
-			ExpiresAt: jwt.NewNumericDate(now.Add(s.jwtExpire)),
+			ExpiresAt: jwt.NewNumericDate(now.Add(s.accessTokenExpire)),
 			IssuedAt:  jwt.NewNumericDate(now),
 		},
 	}
-
 	token := jwt.NewWithClaims(jwt.SigningMethodHS256, claims)
 	return token.SignedString(s.jwtSecret)
 }
 
-func (s *AuthService) parseToken(tokenString string) (*jwtClaims, error) {
+// generateRefreshToken tạo UUID random string, lưu vào DB, trả về token string + thời hạn.
+func (s *AuthService) generateRefreshToken(ctx context.Context, userID string) (string, time.Time, error) {
+	b := make([]byte, 32)
+	if _, err := rand.Read(b); err != nil {
+		return "", time.Time{}, fmt.Errorf("generate refresh token: %w", err)
+	}
+	tokenString := hex.EncodeToString(b)
+
+	userOID, err := parseObjectID(userID)
+	if err != nil {
+		return "", time.Time{}, err
+	}
+
+	expiresAt := time.Now().UTC().Add(s.refreshTokenExpire)
+	rt := &model.RefreshToken{
+		UserID:    userOID,
+		Token:     tokenString,
+		ExpiresAt: expiresAt,
+	}
+
+	if err := s.refreshTokenRepo.Create(ctx, rt); err != nil {
+		return "", time.Time{}, fmt.Errorf("save refresh token: %w", err)
+	}
+
+	return tokenString, expiresAt, nil
+}
+
+// ParseAccessToken validate và parse JWT access token — dùng bởi middleware.
+func (s *AuthService) ParseAccessToken(tokenString string) (string, error) {
 	token, err := jwt.ParseWithClaims(tokenString, &jwtClaims{}, func(token *jwt.Token) (interface{}, error) {
 		if _, ok := token.Method.(*jwt.SigningMethodHMAC); !ok {
 			return nil, fmt.Errorf("unexpected signing method: %v", token.Header["alg"])
@@ -170,25 +244,20 @@ func (s *AuthService) parseToken(tokenString string) (*jwtClaims, error) {
 		return s.jwtSecret, nil
 	})
 	if err != nil {
-		return nil, err
+		return "", ErrTokenInvalid
 	}
 
 	claims, ok := token.Claims.(*jwtClaims)
 	if !ok || !token.Valid {
-		return nil, ErrTokenInvalid
+		return "", ErrTokenInvalid
 	}
 
-	if s.IsTokenBlacklisted(tokenString) {
-		return nil, ErrTokenBlacklisted
-	}
-
-	return claims, nil
+	return claims.UserID, nil
 }
 
 func toUserResponse(user *model.User) dto.UserResponse {
 	return dto.UserResponse{
 		ID:    user.ID.Hex(),
 		Email: user.Email,
-		Phone: user.Phone,
 	}
 }

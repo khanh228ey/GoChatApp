@@ -35,7 +35,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		status := http.StatusInternalServerError
 		if errors.Is(err, service.ErrUserExists) {
 			status = http.StatusConflict
-		} else if err.Error() == "email hoặc số điện thoại là bắt buộc" {
+		} else if err.Error() == "email là bắt buộc" {
 			status = http.StatusBadRequest
 		}
 		c.JSON(status, gin.H{"error": err.Error()})
