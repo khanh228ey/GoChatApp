@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"time"
 
 	"go_service/internal/dto"
 	"go_service/internal/service"
@@ -12,7 +13,9 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// AuthHandler xử lý các endpoint đăng ký, đăng nhập, đăng xuất.
+const refreshTokenCookieName = "refresh_token"
+
+// AuthHandler xử lý các endpoint đăng ký, đăng nhập, đăng xuất, refresh token.
 type AuthHandler struct {
 	authService *service.AuthService
 }
@@ -30,7 +33,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
-	result, err := h.authService.Register(c.Request.Context(), &req)
+	result, pair, err := h.authService.Register(c.Request.Context(), &req)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, service.ErrUserExists) {
@@ -42,6 +45,7 @@ func (h *AuthHandler) Register(c *gin.Context) {
 		return
 	}
 
+	setRefreshTokenCookie(c, pair.RefreshToken, pair.RefreshTokenExpiry)
 	c.JSON(http.StatusCreated, result)
 }
 
@@ -53,7 +57,7 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
-	result, err := h.authService.Login(c.Request.Context(), &req)
+	result, pair, err := h.authService.Login(c.Request.Context(), &req)
 	if err != nil {
 		status := http.StatusInternalServerError
 		if errors.Is(err, service.ErrInvalidLogin) {
@@ -63,23 +67,56 @@ func (h *AuthHandler) Login(c *gin.Context) {
 		return
 	}
 
+	setRefreshTokenCookie(c, pair.RefreshToken, pair.RefreshTokenExpiry)
 	c.JSON(http.StatusOK, result)
 }
 
-// Logout POST /api/v1/auth/logout — cần gửi header Authorization: Bearer <token>
+// RefreshToken POST /api/v1/auth/refresh
+// Browser tự gửi HTTP-only cookie, không cần body.
+func (h *AuthHandler) RefreshToken(c *gin.Context) {
+	oldToken, err := c.Cookie(refreshTokenCookieName)
+	if err != nil || oldToken == "" {
+		c.JSON(http.StatusUnauthorized, gin.H{"error": "refresh token không tìm thấy"})
+		return
+	}
+
+	result, pair, err := h.authService.RefreshToken(c.Request.Context(), oldToken)
+	if err != nil {
+		// Xóa cookie nếu token không hợp lệ / hết hạn
+		clearRefreshTokenCookie(c)
+		status := http.StatusUnauthorized
+		c.JSON(status, gin.H{"error": err.Error()})
+		return
+	}
+
+	setRefreshTokenCookie(c, pair.RefreshToken, pair.RefreshTokenExpiry)
+	c.JSON(http.StatusOK, result)
+}
+
+// Logout POST /api/v1/auth/logout
 func (h *AuthHandler) Logout(c *gin.Context) {
-	token := extractBearerToken(c.GetHeader("Authorization"))
-	if token == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "thiếu token"})
+	refreshToken, _ := c.Cookie(refreshTokenCookieName)
+
+	if err := h.authService.Logout(c.Request.Context(), refreshToken); err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
 		return
 	}
 
-	if err := h.authService.Logout(token); err != nil {
-		c.JSON(http.StatusUnauthorized, gin.H{"error": err.Error()})
-		return
-	}
-
+	clearRefreshTokenCookie(c)
 	c.JSON(http.StatusOK, dto.MessageResponse{Message: "đăng xuất thành công"})
+}
+
+// setRefreshTokenCookie set HTTP-only cookie chứa refresh token.
+func setRefreshTokenCookie(c *gin.Context, token string, expiry time.Time) {
+	maxAge := int(time.Until(expiry).Seconds())
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(refreshTokenCookieName, token, maxAge, "/api/v1/auth", "", false, true)
+}
+
+// clearRefreshTokenCookie xóa cookie refresh token.
+func clearRefreshTokenCookie(c *gin.Context) {
+	c.SetSameSite(http.SameSiteLaxMode)
+	c.SetCookie(refreshTokenCookieName, "", -1, "/api/v1/auth", "", false, true)
 }
 
 // extractBearerToken lấy token từ header "Bearer <token>".

@@ -37,7 +37,8 @@ func main() {
 
 	// 3. Khởi tạo repository → service → handler (auth)
 	userRepo := repository.NewUserRepository(mongo.Database)
-	authService := service.NewAuthService(userRepo, cfg)
+	refreshTokenRepo := repository.NewRefreshTokenRepository(mongo.Database)
+	authService := service.NewAuthService(userRepo, refreshTokenRepo, cfg)
 	authHandler := handler.NewAuthHandler(authService)
 
 	// 4. Khởi tạo WebSocket Hub và chạy trong goroutine riêng
@@ -47,7 +48,7 @@ func main() {
 
 	// 5. Khởi tạo Gin router và đăng ký tất cả routes
 	r := gin.Default()
-	routes.Setup(r, socketHandler, authHandler)
+	routes.Setup(r, cfg, socketHandler, authHandler)
 
 	// 6. Chạy HTTP server trên port đã cấu hình
 	log.Printf("server running on port %s", cfg.Port)

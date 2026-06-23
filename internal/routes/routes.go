@@ -3,6 +3,7 @@
 package routes
 
 import (
+	"go_service/internal/config"
 	"go_service/internal/handler"
 	"go_service/internal/middleware"
 	"go_service/internal/socket"
@@ -11,16 +12,16 @@ import (
 )
 
 // Setup nhận Gin engine và các handler, đăng ký middleware + routes.
-func Setup(r *gin.Engine, socketHandler *socket.Handler, authHandler *handler.AuthHandler) {
-	// Áp dụng CORS cho mọi request
-	r.Use(middleware.Cors())
+func Setup(r *gin.Engine, cfg *config.Config, socketHandler *socket.Handler, authHandler *handler.AuthHandler) {
+	// Áp dụng CORS cho mọi request (với credentials cho cookie)
+	r.Use(middleware.Cors(cfg))
 
-	// Health check — dùng để kiểm tra server còn sống không
+	// Health check
 	r.GET("/ping", func(c *gin.Context) {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
 
-	// WebSocket endpoint — client kết nối tại ws://host:port/ws
+	// WebSocket endpoint
 	r.GET("/ws", socketHandler.HandleWebSocket)
 
 	// API v1
@@ -31,6 +32,7 @@ func Setup(r *gin.Engine, socketHandler *socket.Handler, authHandler *handler.Au
 			auth.POST("/register", authHandler.Register)
 			auth.POST("/login", authHandler.Login)
 			auth.POST("/logout", authHandler.Logout)
+			auth.POST("/refresh", authHandler.RefreshToken) // refresh access token bằng cookie
 		}
 	}
 }
