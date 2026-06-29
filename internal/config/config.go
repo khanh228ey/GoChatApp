@@ -11,13 +11,13 @@ import (
 
 // Config lưu toàn bộ cấu hình cần thiết cho server.
 type Config struct {
-	Port                    string // Port HTTP server lắng nghe (mặc định: 8080)
-	MongoURI                string // URI kết nối MongoDB
-	MongoDatabase           string // Tên database sử dụng trong MongoDB
-	JWTSecret               string // Secret key để ký JWT access token
-	AccessTokenExpireMinutes int   // Thời hạn access token (phút, mặc định: 15)
-	RefreshTokenExpireDays  int    // Thời hạn refresh token (ngày, mặc định: 7)
-	FrontendOrigin          string // Origin cho phép CORS (vd: http://localhost:5173)
+	Port                     string // Port HTTP server lắng nghe (mặc định: 8080)
+	MongoURI                 string // URI kết nối MongoDB
+	MongoDatabase            string // Tên database sử dụng trong MongoDB
+	JWTSecret                string // Secret key để ký JWT access token
+	AccessTokenExpireMinutes int    // Thời hạn access token (phút, mặc định: 15)
+	RefreshTokenExpireDays   int    // Thời hạn refresh token (ngày, mặc định: 7)
+	FrontendOrigin           string // Origin cho phép CORS (vd: http://localhost:5173)
 }
 
 // Load đọc file .env và trả về struct Config.
@@ -52,12 +52,12 @@ func Load() *Config {
 	}
 
 	return &Config{
-		Port:                    port,
-		MongoURI:                os.Getenv("MONGO_URI"),
-		MongoDatabase:           os.Getenv("MONGO_DATABASE"),
-		JWTSecret:               os.Getenv("JWT_SECRET"),
+		Port:                     port,
+		MongoURI:                 os.Getenv("MONGO_URI"),
+		MongoDatabase:            os.Getenv("MONGO_DATABASE"),
+		JWTSecret:                os.Getenv("JWT_SECRET"),
 		AccessTokenExpireMinutes: expireMinutes,
-		RefreshTokenExpireDays:  expireDays,
-		FrontendOrigin:          frontendOrigin,
+		RefreshTokenExpireDays:   expireDays,
+		FrontendOrigin:           frontendOrigin,
 	}
 }
