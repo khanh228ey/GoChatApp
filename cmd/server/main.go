@@ -41,6 +41,11 @@ func main() {
 	authService := service.NewAuthService(userRepo, refreshTokenRepo, cfg)
 	authHandler := handler.NewAuthHandler(authService)
 
+	// 3b. Friendship layer
+	friendshipRepo := repository.NewFriendshipRepository(mongo.Database)
+	friendshipService := service.NewFriendshipService(userRepo, friendshipRepo)
+	friendshipHandler := handler.NewFriendshipHandler(friendshipService)
+
 	// 4. Khởi tạo WebSocket Hub và chạy trong goroutine riêng
 	hub := socket.NewHub()
 	go hub.Run()
@@ -48,7 +53,7 @@ func main() {
 
 	// 5. Khởi tạo Gin router và đăng ký tất cả routes
 	r := gin.Default()
-	routes.Setup(r, cfg, socketHandler, authHandler)
+	routes.Setup(r, cfg, socketHandler, authHandler, friendshipHandler, authService)
 
 	// 6. Chạy HTTP server trên port đã cấu hình
 	log.Printf("server running on port %s", cfg.Port)
