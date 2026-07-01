@@ -3,26 +3,16 @@
 package routes
 
 import (
-	"go_service/internal/config"
-	"go_service/internal/handler"
+	"go_service/internal/app"
 	"go_service/internal/middleware"
-	"go_service/internal/service"
-	"go_service/internal/socket"
 
 	"github.com/gin-gonic/gin"
 )
 
-// Setup nhận Gin engine và các handler, đăng ký middleware + routes.
-func Setup(
-	r *gin.Engine,
-	cfg *config.Config,
-	socketHandler *socket.Handler,
-	authHandler *handler.AuthHandler,
-	friendshipHandler *handler.FriendshipHandler,
-	authService *service.AuthService,
-) {
+// Setup nhận Gin engine và App đã wire sẵn, đăng ký middleware + routes.
+func Setup(r *gin.Engine, a *app.App) {
 	// Áp dụng CORS cho mọi request (với credentials cho cookie)
-	r.Use(middleware.Cors(cfg))
+	r.Use(middleware.Cors(a.Config))
 
 	// Health check
 	r.GET("/ping", func(c *gin.Context) {
@@ -30,31 +20,31 @@ func Setup(
 	})
 
 	// WebSocket endpoint
-	r.GET("/ws", socketHandler.HandleWebSocket)
+	r.GET("/ws", a.SocketHandler.HandleWebSocket)
 
 	// API v1
 	v1 := r.Group("/api/v1")
 	{
 		auth := v1.Group("/auth")
 		{
-			auth.POST("/register", authHandler.Register)
-			auth.POST("/login", authHandler.Login)
-			auth.POST("/logout", authHandler.Logout)
-			auth.POST("/refresh", authHandler.RefreshToken) // refresh access token bằng cookie
+			auth.POST("/register", a.AuthHandler.Register)
+			auth.POST("/login", a.AuthHandler.Login)
+			auth.POST("/logout", a.AuthHandler.Logout)
+			auth.POST("/refresh", a.AuthHandler.RefreshToken) // refresh access token bằng cookie
 		}
 
 		// Routes yêu cầu xác thực JWT
 		protected := v1.Group("")
-		protected.Use(middleware.RequireAuth(authService))
+		protected.Use(middleware.RequireAuth(a.AuthService))
 		{
 			friends := protected.Group("/friends")
 			{
-				friends.GET("/search", friendshipHandler.SearchUser)              // tìm user theo email
-				friends.POST("/request", friendshipHandler.SendFriendRequest)     // gửi lời mời (pending)
-				friends.GET("/requests", friendshipHandler.GetPendingRequests)    // inbox lời mời đang chờ
-				friends.POST("/requests/:id/accept", friendshipHandler.AcceptFriendRequest) // chấp nhận
-				friends.DELETE("/requests/:id", friendshipHandler.RejectFriendRequest)      // từ chối / xóa
-				friends.GET("", friendshipHandler.GetFriends)                     // danh sách bạn bè accepted
+				friends.GET("/search", a.FriendshipHandler.SearchUser)              // tìm user theo email
+				friends.POST("/request", a.FriendshipHandler.SendFriendRequest)     // gửi lời mời (pending)
+				friends.GET("/requests", a.FriendshipHandler.GetPendingRequests)    // inbox lời mời đang chờ
+				friends.POST("/requests/:id/accept", a.FriendshipHandler.AcceptFriendRequest) // chấp nhận
+				friends.DELETE("/requests/:id", a.FriendshipHandler.RejectFriendRequest)      // từ chối / xóa
+				friends.GET("", a.FriendshipHandler.GetFriends)                     // danh sách bạn bè accepted
 			}
 		}
 	}
