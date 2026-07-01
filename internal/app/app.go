@@ -17,6 +17,7 @@ type App struct {
 	Config            *config.Config
 	AuthHandler       *handler.AuthHandler
 	FriendshipHandler *handler.FriendshipHandler
+	MessageHandler    *handler.MessageHandler
 	AuthService       *service.AuthService
 	SocketHandler     *socket.Handler
 }
@@ -26,18 +27,21 @@ func New(cfg *config.Config, db *mongo.Database) *App {
 	userRepo := repository.NewUserRepository(db)
 	refreshTokenRepo := repository.NewRefreshTokenRepository(db)
 	friendshipRepo := repository.NewFriendshipRepository(db)
+	messageRepo := repository.NewMessageRepository(db)
 
 	authService := service.NewAuthService(userRepo, refreshTokenRepo, cfg)
 	friendshipService := service.NewFriendshipService(userRepo, friendshipRepo)
+	messageService := service.NewMessageService(messageRepo)
 
-	hub := socket.NewHub()
+	hub := socket.NewHub(messageService)
 	go hub.Run()
 
 	return &App{
 		Config:            cfg,
 		AuthHandler:       handler.NewAuthHandler(authService),
 		FriendshipHandler: handler.NewFriendshipHandler(friendshipService),
+		MessageHandler:    handler.NewMessageHandler(messageService),
 		AuthService:       authService,
-		SocketHandler:     socket.NewHandler(hub),
+		SocketHandler:     socket.NewHandler(hub, authService),
 	}
 }

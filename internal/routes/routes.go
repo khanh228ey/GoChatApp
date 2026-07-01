@@ -19,7 +19,7 @@ func Setup(r *gin.Engine, a *app.App) {
 		c.JSON(200, gin.H{"message": "pong"})
 	})
 
-	// WebSocket endpoint
+	// WebSocket endpoint — xác thực qua query param ?token=xxx
 	r.GET("/ws", a.SocketHandler.HandleWebSocket)
 
 	// API v1
@@ -39,13 +39,16 @@ func Setup(r *gin.Engine, a *app.App) {
 		{
 			friends := protected.Group("/friends")
 			{
-				friends.GET("/search", a.FriendshipHandler.SearchUser)              // tìm user theo email
-				friends.POST("/request", a.FriendshipHandler.SendFriendRequest)     // gửi lời mời (pending)
-				friends.GET("/requests", a.FriendshipHandler.GetPendingRequests)    // inbox lời mời đang chờ
+				friends.GET("/search", a.FriendshipHandler.SearchUser)                    // tìm user theo email
+				friends.POST("/request", a.FriendshipHandler.SendFriendRequest)           // gửi lời mời (pending)
+				friends.GET("/requests", a.FriendshipHandler.GetPendingRequests)          // inbox lời mời đang chờ
 				friends.POST("/requests/:id/accept", a.FriendshipHandler.AcceptFriendRequest) // chấp nhận
-				friends.DELETE("/requests/:id", a.FriendshipHandler.RejectFriendRequest)      // từ chối / xóa
-				friends.GET("", a.FriendshipHandler.GetFriends)                     // danh sách bạn bè accepted
+				friends.DELETE("/requests/:id", a.FriendshipHandler.RejectFriendRequest)  // từ chối / xóa
+				friends.GET("", a.FriendshipHandler.GetFriends)                           // danh sách bạn bè accepted
 			}
+
+			// Messages history
+			protected.GET("/messages", a.MessageHandler.GetMessages)
 		}
 	}
 }
