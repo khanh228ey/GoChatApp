@@ -70,3 +70,34 @@ func (r *MessageRepository) FindByConversationID(ctx context.Context, conversati
 
 	return msgs, nil
 }
+
+// LatestPerConversation lấy tin nhắn mới nhất của mỗi conversation mà user tham gia.
+// Dùng để backfill collection conversations từ dữ liệu messages cũ.
+func (r *MessageRepository) LatestPerConversation(ctx context.Context, userID string) ([]model.Message, error) {
+	pipeline := mongo.Pipeline{
+		{{Key: "$match", Value: bson.M{
+			"$or": []bson.M{
+				{"conversation_id": bson.M{"$regex": "^" + userID + "_"}},
+				{"conversation_id": bson.M{"$regex": "_" + userID + "$"}},
+			},
+		}}},
+		{{Key: "$sort", Value: bson.D{{Key: "created_at", Value: -1}}}},
+		{{Key: "$group", Value: bson.M{
+			"_id":          "$conversation_id",
+			"last_message": bson.M{"$first": "$$ROOT"},
+		}}},
+		{{Key: "$replaceRoot", Value: bson.M{"newRoot": "$last_message"}}},
+	}
+
+	cursor, err := r.col.Aggregate(ctx, pipeline)
+	if err != nil {
+		return nil, err
+	}
+	defer cursor.Close(ctx)
+
+	var msgs []model.Message
+	if err := cursor.All(ctx, &msgs); err != nil {
+		return nil, err
+	}
+	return msgs, nil
+}

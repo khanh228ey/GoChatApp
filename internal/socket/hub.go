@@ -48,16 +48,18 @@ type Hub struct {
 	clients        map[string]*Client // userID → Client
 	register       chan *Client
 	unregister     chan *Client
-	messageService *service.MessageService
+	messageService      *service.MessageService
+	conversationService *service.ConversationService
 }
 
 // NewHub tạo Hub mới.
-func NewHub(messageService *service.MessageService) *Hub {
+func NewHub(messageService *service.MessageService, conversationService *service.ConversationService) *Hub {
 	return &Hub{
-		clients:        make(map[string]*Client),
-		register:       make(chan *Client, 16),
-		unregister:     make(chan *Client, 16),
-		messageService: messageService,
+		clients:             make(map[string]*Client),
+		register:            make(chan *Client, 16),
+		unregister:          make(chan *Client, 16),
+		messageService:      messageService,
+		conversationService: conversationService,
 	}
 }
 
@@ -137,6 +139,15 @@ func (h *Hub) HandleIncoming(senderID string, raw []byte) {
 		}
 		log.Printf("[hub] message saved: conv=%s sender=%s", msg.ConversationID, senderID)
 
+		receiverID := extractReceiver(payload.ConversationID, senderID)
+		unreadTarget := receiverID
+		if unreadTarget == senderID {
+			unreadTarget = ""
+		}
+		if err := h.conversationService.OnNewMessage(ctx, msg, unreadTarget); err != nil {
+			log.Printf("[hub] failed to update conversation: %v", err)
+		}
+
 		// Build response payload (với ID và timestamp từ DB)
 		resp := WsPayload{
 			Type:           WsTypeChatMessage,
@@ -148,8 +159,6 @@ func (h *Hub) HandleIncoming(senderID string, raw []byte) {
 		}
 		data, _ := json.Marshal(resp)
 
-		// Xác định receiverID từ conversationID (format: "idA_idB" đã sort)
-		receiverID := extractReceiver(payload.ConversationID, senderID)
 		log.Printf("[hub] routing: sender=%s receiver=%s", senderID, receiverID)
 
 		// Echo lại sender

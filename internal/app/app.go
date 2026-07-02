@@ -14,12 +14,13 @@ import (
 
 // App chứa các dependency đã wire sẵn cho routes và middleware.
 type App struct {
-	Config            *config.Config
-	AuthHandler       *handler.AuthHandler
-	FriendshipHandler *handler.FriendshipHandler
-	MessageHandler    *handler.MessageHandler
-	AuthService       *service.AuthService
-	SocketHandler     *socket.Handler
+	Config               *config.Config
+	AuthHandler          *handler.AuthHandler
+	FriendshipHandler    *handler.FriendshipHandler
+	MessageHandler       *handler.MessageHandler
+	ConversationHandler  *handler.ConversationHandler
+	AuthService          *service.AuthService
+	SocketHandler        *socket.Handler
 }
 
 // New khởi tạo toàn bộ layer từ database đã connect.
@@ -28,20 +29,23 @@ func New(cfg *config.Config, db *mongo.Database) *App {
 	refreshTokenRepo := repository.NewRefreshTokenRepository(db)
 	friendshipRepo := repository.NewFriendshipRepository(db)
 	messageRepo := repository.NewMessageRepository(db)
+	conversationRepo := repository.NewConversationRepository(db)
 
 	authService := service.NewAuthService(userRepo, refreshTokenRepo, cfg)
 	friendshipService := service.NewFriendshipService(userRepo, friendshipRepo)
 	messageService := service.NewMessageService(messageRepo)
+	conversationService := service.NewConversationService(conversationRepo, messageRepo, userRepo)
 
-	hub := socket.NewHub(messageService)
+	hub := socket.NewHub(messageService, conversationService)
 	go hub.Run()
 
 	return &App{
 		Config:            cfg,
 		AuthHandler:       handler.NewAuthHandler(authService),
 		FriendshipHandler: handler.NewFriendshipHandler(friendshipService),
-		MessageHandler:    handler.NewMessageHandler(messageService),
-		AuthService:       authService,
+		MessageHandler:      handler.NewMessageHandler(messageService),
+		ConversationHandler: handler.NewConversationHandler(conversationService),
+		AuthService:         authService,
 		SocketHandler:     socket.NewHandler(hub, authService),
 	}
 }
