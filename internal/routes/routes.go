@@ -49,6 +49,10 @@ func Setup(r *gin.Engine, a *app.App) {
 
 			// Messages history
 			protected.GET("/messages", a.MessageHandler.GetMessages)
+
+			// Conversations
+			protected.GET("/conversations", a.ConversationHandler.GetConversations)
+			protected.POST("/conversations/:id/read", a.ConversationHandler.MarkConversationRead)
 		}
 	}
 }
