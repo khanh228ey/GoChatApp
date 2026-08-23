@@ -1,19 +1,11 @@
-// Package socket xử lý WebSocket: quản lý client theo userID, route message realtime.
+// Package socket xử lý WebSocket: quản lý client theo userID, phát message realtime.
 package socket
 
 import (
-	"context"
-	"encoding/json"
 	"log"
-	"strings"
 	"sync"
-	"time"
-
-	"go_service/internal/model"
-	"go_service/internal/service"
 
 	"github.com/gorilla/websocket"
-	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 // WsMessageType là loại event WebSocket.
@@ -43,23 +35,22 @@ type Client struct {
 }
 
 // Hub là trung tâm quản lý tất cả WebSocket clients theo userID.
+// Lưu ý: Hub không còn tự lưu DB / xử lý business logic khi nhận tin nhắn — việc đó
+// nằm ở Kafka consumer (internal/kafka.PersistBroadcastConsumer). Hub chỉ còn là
+// tầng transport realtime cuối cùng: giữ kết nối WS và đẩy data khi được yêu cầu.
 type Hub struct {
-	mu             sync.RWMutex
-	clients        map[string]*Client // userID → Client
-	register       chan *Client
-	unregister     chan *Client
-	messageService      *service.MessageService
-	conversationService *service.ConversationService
+	mu         sync.RWMutex
+	clients    map[string]*Client // userID → Client
+	register   chan *Client
+	unregister chan *Client
 }
 
 // NewHub tạo Hub mới.
-func NewHub(messageService *service.MessageService, conversationService *service.ConversationService) *Hub {
+func NewHub() *Hub {
 	return &Hub{
-		clients:             make(map[string]*Client),
-		register:            make(chan *Client, 16),
-		unregister:          make(chan *Client, 16),
-		messageService:      messageService,
-		conversationService: conversationService,
+		clients:    make(map[string]*Client),
+		register:   make(chan *Client, 16),
+		unregister: make(chan *Client, 16),
 	}
 }
 
@@ -106,89 +97,17 @@ func (h *Hub) sendToUser(userID string, data []byte) {
 	}
 }
 
-// HandleIncoming xử lý message từ client: lưu DB + route tới receiver.
-// Chạy trong goroutine riêng để không block ReadPump.
-func (h *Hub) HandleIncoming(senderID string, raw []byte) {
-	go func() {
-		var payload WsPayload
-		if err := json.Unmarshal(raw, &payload); err != nil {
-			log.Printf("[hub] invalid json from %s: %v", senderID, err)
-			return
+// DeliverToUsers gửi cùng 1 data tới nhiều user (dedupe id rỗng/trùng). Được gọi bởi
+// Kafka consumer (persist-broadcast) sau khi đã lưu DB — không còn gọi trực tiếp từ WS handler.
+func (h *Hub) DeliverToUsers(data []byte, userIDs ...string) {
+	seen := make(map[string]bool, len(userIDs))
+	for _, id := range userIDs {
+		if id == "" || seen[id] {
+			continue
 		}
-
-		if payload.Type != WsTypeChatMessage || payload.ConversationID == "" || payload.Content == "" {
-			log.Printf("[hub] invalid payload type=%s convID=%s content=%s", payload.Type, payload.ConversationID, payload.Content)
-			return
-		}
-
-		// Lưu message vào DB
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-
-		msg := &model.Message{
-			ID:             primitive.NewObjectID(),
-			ConversationID: payload.ConversationID,
-			SenderID:       senderID,
-			Content:        payload.Content,
-			CreatedAt:      time.Now().UTC(),
-		}
-
-		if err := h.messageService.SaveMessageModel(ctx, msg); err != nil {
-			log.Printf("[hub] failed to save message: %v", err)
-			return
-		}
-		log.Printf("[hub] message saved: conv=%s sender=%s", msg.ConversationID, senderID)
-
-		receiverID := extractReceiver(payload.ConversationID, senderID)
-		unreadTarget := receiverID
-		if unreadTarget == senderID {
-			unreadTarget = ""
-		}
-		if err := h.conversationService.OnNewMessage(ctx, msg, unreadTarget); err != nil {
-			log.Printf("[hub] failed to update conversation: %v", err)
-		}
-
-		// Build response payload (với ID và timestamp từ DB)
-		resp := WsPayload{
-			Type:           WsTypeChatMessage,
-			ID:             msg.ID.Hex(),
-			ConversationID: msg.ConversationID,
-			SenderID:       senderID,
-			Content:        msg.Content,
-			CreatedAt:      msg.CreatedAt.Format(time.RFC3339),
-		}
-		data, _ := json.Marshal(resp)
-
-		log.Printf("[hub] routing: sender=%s receiver=%s", senderID, receiverID)
-
-		// Echo lại sender
-		h.sendToUser(senderID, data)
-		// Gửi tới receiver nếu khác sender và có giá trị
-		if receiverID != "" && receiverID != senderID {
-			h.sendToUser(receiverID, data)
-		}
-	}()
-}
-
-// extractReceiver lấy userID còn lại từ conversationID "idA_idB".
-// ConversationID được build bằng sort([idA, idB]).join("_")
-func extractReceiver(conversationID, senderID string) string {
-	// Tìm dấu '_' phân cách 2 ID
-	idx := strings.Index(conversationID, "_")
-	if idx < 0 {
-		return ""
+		seen[id] = true
+		h.sendToUser(id, data)
 	}
-	id1 := conversationID[:idx]
-	id2 := conversationID[idx+1:]
-
-	if id1 == senderID {
-		return id2
-	}
-	if id2 == senderID {
-		return id1
-	}
-	// senderID không khớp phần nào → trả về id1 để thử
-	return id1
 }
 
 // RegisterClient thêm client vào Hub.

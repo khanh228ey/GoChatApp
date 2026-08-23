@@ -1,9 +1,13 @@
 package socket
 
 import (
+	"context"
+	"encoding/json"
 	"log"
 	"net/http"
+	"time"
 
+	kafkapkg "go_service/internal/kafka"
 	"go_service/internal/service"
 
 	"github.com/gin-gonic/gin"
@@ -23,11 +27,12 @@ var wsUpgrader = websocket.Upgrader{
 type Handler struct {
 	hub         *Hub
 	authService *service.AuthService // Dùng để xác thực token từ query param
+	producer    *kafkapkg.Producer   // Publish tin nhắn lên Kafka thay vì lưu DB trực tiếp
 }
 
-// NewHandler tạo handler mới, inject Hub và AuthService.
-func NewHandler(hub *Hub, authService *service.AuthService) *Handler {
-	return &Handler{hub: hub, authService: authService}
+// NewHandler tạo handler mới, inject Hub, AuthService và Kafka producer.
+func NewHandler(hub *Hub, authService *service.AuthService, producer *kafkapkg.Producer) *Handler {
+	return &Handler{hub: hub, authService: authService, producer: producer}
 }
 
 // HandleWebSocket là endpoint GET /ws?token=xxx
@@ -75,6 +80,34 @@ func (h *Handler) HandleWebSocket(c *gin.Context) {
 		if err != nil {
 			return // Client ngắt kết nối
 		}
-		h.hub.HandleIncoming(userID, rawMsg)
+		h.publishIncoming(userID, rawMsg)
+	}
+}
+
+// publishIncoming validate payload rồi publish lên Kafka (topic chat.messages) thay vì
+// lưu DB + route trực tiếp như trước. Việc lưu DB và phát WS được consumer group
+// "persist-broadcast" (internal/kafka) đảm nhiệm bất đồng bộ.
+func (h *Handler) publishIncoming(senderID string, raw []byte) {
+	var payload WsPayload
+	if err := json.Unmarshal(raw, &payload); err != nil {
+		log.Printf("[ws] invalid json from %s: %v", senderID, err)
+		return
+	}
+
+	if payload.Type != WsTypeChatMessage || payload.ConversationID == "" || payload.Content == "" {
+		log.Printf("[ws] invalid payload type=%s convID=%s content=%s", payload.Type, payload.ConversationID, payload.Content)
+		return
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	evt := kafkapkg.MessageEvent{
+		ConversationID: payload.ConversationID,
+		SenderID:       senderID,
+		Content:        payload.Content,
+	}
+	if err := h.producer.PublishMessage(ctx, evt); err != nil {
+		log.Printf("[ws] failed to publish message to kafka: %v", err)
 	}
 }

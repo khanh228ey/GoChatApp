@@ -17,6 +17,11 @@ MONGO_URI=mongodb://localhost:27017
 MONGO_DATABASE=go_service_db
 JWT_SECRET=your-super-secret-key-change-in-production
 JWT_EXPIRE_HOURS=24
+
+KAFKA_BROKERS=localhost:9094
+KAFKA_MESSAGES_TOPIC=chat.messages
+KAFKA_MESSAGES_PARTITIONS=3
+KAFKA_REPLICATION_FACTOR=1
 ```
 
 ## Chạy server
@@ -34,6 +39,7 @@ go run cmd/server/main.go
 | POST   | /api/v1/auth/register   | Đăng ký tài khoản              |
 | POST   | /api/v1/auth/login      | Đăng nhập, nhận JWT token      |
 | POST   | /api/v1/auth/logout     | Đăng xuất, vô hiệu hóa token   |
+| GET    | /api/v1/kafka/status    | Trạng thái pipeline Kafka (producer + consumer group) |
 
 ### Auth API
 
@@ -87,9 +93,16 @@ go_service/
 │   ├── routes/                 # Đăng ký tất cả HTTP routes
 │   │   └── routes.go           # Gom endpoint vào 1 chỗ, gọi từ main.go
 │   │
-│   └── socket/                 # WebSocket realtime
-│       ├── hub.go              # Quản lý clients, broadcast message
-│       └── handler.go          # Xử lý kết nối WebSocket từ client
+│   ├── socket/                 # WebSocket realtime
+│   │   ├── hub.go              # Quản lý clients, phát message tới đúng user
+│   │   └── handler.go          # Xử lý kết nối WS, publish tin nhắn lên Kafka
+│   │
+│   └── kafka/                  # Kafka producer/consumer cho pipeline tin nhắn
+│       ├── producer.go         # Publish MessageEvent lên topic chat.messages
+│       ├── consumer.go         # Wrapper chung cho kafka.Reader theo consumer group
+│       ├── persist_consumer.go # Group "persist-broadcast": lưu Mongo + phát WS
+│       ├── notify_consumer.go  # Group "notify-unread": đếm tin nhắn (demo fan-out)
+│       └── topic.go            # Tạo topic idempotent qua Admin API
 │
 ├── .env                        # Biến môi trường (không commit)
 ├── .env.example                # Mẫu biến môi trường
@@ -122,8 +135,28 @@ Các **middleware HTTP** áp dụng cho mọi request (CORS, auth, logging...).
 
 ### `internal/socket/`
 Xử lý **WebSocket realtime**.
-- `hub.go` — trung tâm quản lý clients, broadcast.
-- `handler.go` — upgrade HTTP → WS, đọc/ghi message.
+- `hub.go` — trung tâm quản lý clients, phát data tới user (không tự lưu DB nữa).
+- `handler.go` — upgrade HTTP → WS, publish tin nhắn nhận được lên Kafka.
+
+### `internal/kafka/`
+Pipeline tin nhắn qua **Kafka** — tách việc "nhận tin nhắn từ WS" ra khỏi việc "lưu DB
++ phát tới người nhận", để hiểu producer/consumer/consumer group hoạt động thế nào.
+
+```
+Browser --WS--> socket.Handler --producer--> topic: chat.messages (key = conversation_id)
+                                                        │
+                        ┌───────────────────────────────┴───────────────────────────────┐
+                        ▼ group "persist-broadcast"                                       ▼ group "notify-unread"
+                  lưu Mongo + gọi Hub.DeliverToUsers                                đếm tin nhắn (demo fan-out,
+                  → phát lại qua WebSocket tới sender/receiver                       mô phỏng service notification)
+```
+
+- Key Kafka message = `conversation_id` → mọi tin nhắn cùng 1 hội thoại luôn vào cùng
+  partition, giữ đúng thứ tự (Kafka chỉ đảm bảo order trong phạm vi 1 partition).
+- 2 consumer group đọc **độc lập** cùng 1 topic — minh họa fan-out: mỗi group nhận đủ
+  toàn bộ message, giữ offset riêng, dừng/khởi động lại không ảnh hưởng group kia.
+- Xem trạng thái pipeline (số message đã publish/consume, lag từng group) qua
+  `GET /api/v1/kafka/status` hoặc trang debug FE `/dev/kafka`.
 
 ---
 

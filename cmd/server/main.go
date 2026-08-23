@@ -31,6 +31,11 @@ func main() {
 	log.Printf("connected to mongodb database: %s", cfg.MongoDatabase)
 
 	application := app.New(cfg, mongo.Database)
+	defer func() {
+		if err := application.KafkaProducer.Close(); err != nil {
+			log.Printf("failed to close kafka producer: %v", err)
+		}
+	}()
 
 	r := gin.Default()
 	routes.Setup(r, application)

@@ -53,6 +53,9 @@ func Setup(r *gin.Engine, a *app.App) {
 			// Conversations
 			protected.GET("/conversations", a.ConversationHandler.GetConversations)
 			protected.POST("/conversations/:id/read", a.ConversationHandler.MarkConversationRead)
+
+			// Kafka — trạng thái pipeline (dùng cho trang debug FE)
+			protected.GET("/kafka/status", a.KafkaHandler.GetStatus)
 		}
 	}
 }
