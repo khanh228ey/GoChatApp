@@ -12,8 +12,10 @@ import (
 type WsMessageType string
 
 const (
-	WsTypeChatMessage WsMessageType = "chat_message"
-	WsTypeError       WsMessageType = "error"
+	WsTypeChatMessage   WsMessageType = "chat_message"
+	WsTypeError         WsMessageType = "error"
+	WsTypeWaiting       WsMessageType = "waiting"        // đang xếp hàng chờ, chưa được vào (xem AccessGate)
+	WsTypeAccessGranted WsMessageType = "access_granted" // vừa được cấp slot, có thể dùng app bình thường
 )
 
 // WsPayload là cấu trúc JSON gửi/nhận qua WebSocket.

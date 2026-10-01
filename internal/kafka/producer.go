@@ -33,10 +33,15 @@ func (p *Producer) PublishMessage(ctx context.Context, evt MessageEvent) error {
 	if err != nil {
 		return err
 	}
+	return p.Publish(ctx, evt.ConversationID, data)
+}
 
+// Publish gửi 1 message thô lên topic của Producer này — dùng chung cho mọi loại
+// event (chat message, access-gate event...), mỗi loại có Producer/topic riêng.
+func (p *Producer) Publish(ctx context.Context, key string, value []byte) error {
 	if err := p.writer.WriteMessages(ctx, kafka.Message{
-		Key:   []byte(evt.ConversationID),
-		Value: data,
+		Key:   []byte(key),
+		Value: value,
 	}); err != nil {
 		return err
 	}

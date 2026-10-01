@@ -24,6 +24,7 @@ type Config struct {
 	KafkaMessagesTopic      string   // Topic chứa event tin nhắn mới (mặc định: chat.messages)
 	KafkaMessagesPartitions int      // Số partition khi tạo topic (mặc định: 3)
 	KafkaReplicationFactor  int      // Replication factor khi tạo topic (mặc định: 1, phù hợp 1 broker)
+	KafkaAccessTopic        string   // Topic sự kiện connect/disconnect cho AccessGate — LUÔN 1 partition (mặc định: access.events)
 }
 
 // Load đọc file .env và trả về struct Config.
@@ -81,6 +82,11 @@ func Load() *Config {
 		}
 	}
 
+	kafkaAccessTopic := os.Getenv("KAFKA_ACCESS_TOPIC")
+	if kafkaAccessTopic == "" {
+		kafkaAccessTopic = "access.events"
+	}
+
 	return &Config{
 		Port:                     port,
 		MongoURI:                 os.Getenv("MONGO_URI"),
@@ -94,5 +100,6 @@ func Load() *Config {
 		KafkaMessagesTopic:      kafkaMessagesTopic,
 		KafkaMessagesPartitions: kafkaPartitions,
 		KafkaReplicationFactor:  kafkaReplicationFactor,
+		KafkaAccessTopic:        kafkaAccessTopic,
 	}
 }

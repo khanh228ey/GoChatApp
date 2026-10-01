@@ -22,6 +22,7 @@ KAFKA_BROKERS=localhost:9094
 KAFKA_MESSAGES_TOPIC=chat.messages
 KAFKA_MESSAGES_PARTITIONS=3
 KAFKA_REPLICATION_FACTOR=1
+KAFKA_ACCESS_TOPIC=access.events
 ```
 
 ## Chạy server
@@ -97,11 +98,12 @@ go_service/
 │   │   ├── hub.go              # Quản lý clients, phát message tới đúng user
 │   │   └── handler.go          # Xử lý kết nối WS, publish tin nhắn lên Kafka
 │   │
-│   └── kafka/                  # Kafka producer/consumer cho pipeline tin nhắn
+│   └── kafka/                  # Kafka producer/consumer — xem internal/kafka/README.md
 │       ├── producer.go         # Publish MessageEvent lên topic chat.messages
 │       ├── consumer.go         # Wrapper chung cho kafka.Reader theo consumer group
 │       ├── persist_consumer.go # Group "persist-broadcast": lưu Mongo + phát WS
 │       ├── notify_consumer.go  # Group "notify-unread": đếm tin nhắn (demo fan-out)
+│       ├── access_gate.go      # Giới hạn tối đa 2 user online (1 partition, 1 consumer)
 │       └── topic.go            # Tạo topic idempotent qua Admin API
 │
 ├── .env                        # Biến môi trường (không commit)

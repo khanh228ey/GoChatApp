@@ -27,6 +27,11 @@ type App struct {
 	AuthService         *service.AuthService
 	SocketHandler       *socket.Handler
 	KafkaProducer       *kafkapkg.Producer
+
+	stopConsumers   context.CancelFunc
+	persistConsumer *kafkapkg.PersistBroadcastConsumer
+	notifyConsumer  *kafkapkg.NotifyConsumer
+	accessGate      *kafkapkg.AccessGate
 }
 
 // New khởi tạo toàn bộ layer từ database đã connect.
@@ -50,6 +55,10 @@ func New(cfg *config.Config, db *mongo.Database) *App {
 	if err := kafkapkg.EnsureTopic(cfg.KafkaBrokers, cfg.KafkaMessagesTopic, cfg.KafkaMessagesPartitions, cfg.KafkaReplicationFactor); err != nil {
 		log.Printf("[kafka] không tạo được topic %q (bỏ qua, có thể đã tồn tại hoặc broker chưa sẵn sàng): %v", cfg.KafkaMessagesTopic, err)
 	}
+	// access.events LUÔN 1 partition — AccessGate cần thứ tự tuyệt đối để làm single-writer coordinator.
+	if err := kafkapkg.EnsureTopic(cfg.KafkaBrokers, cfg.KafkaAccessTopic, 1, cfg.KafkaReplicationFactor); err != nil {
+		log.Printf("[kafka] không tạo được topic %q (bỏ qua, có thể đã tồn tại hoặc broker chưa sẵn sàng): %v", cfg.KafkaAccessTopic, err)
+	}
 
 	producer := kafkapkg.NewProducer(cfg.KafkaBrokers, cfg.KafkaMessagesTopic)
 
@@ -57,11 +66,14 @@ func New(cfg *config.Config, db *mongo.Database) *App {
 		cfg.KafkaBrokers, cfg.KafkaMessagesTopic, messageService, conversationService, hub,
 	)
 	notifyConsumer := kafkapkg.NewNotifyConsumer(cfg.KafkaBrokers, cfg.KafkaMessagesTopic)
+	accessGate := kafkapkg.NewAccessGate(cfg.KafkaBrokers, cfg.KafkaAccessTopic)
 
-	// 2 consumer group độc lập cùng đọc 1 topic — chạy suốt vòng đời server.
-	consumerCtx := context.Background()
+	// Consumer chạy suốt vòng đời server. access-gate CHỈ được chạy đúng 1 instance
+	// (single-writer) — không được scale ra nhiều goroutine/process cùng group này.
+	consumerCtx, stopConsumers := context.WithCancel(context.Background())
 	go persistConsumer.Start(consumerCtx)
 	go notifyConsumer.Start(consumerCtx)
+	go accessGate.Start(consumerCtx)
 
 	return &App{
 		Config:              cfg,
@@ -69,9 +81,31 @@ func New(cfg *config.Config, db *mongo.Database) *App {
 		FriendshipHandler:   handler.NewFriendshipHandler(friendshipService),
 		MessageHandler:      handler.NewMessageHandler(messageService),
 		ConversationHandler: handler.NewConversationHandler(conversationService),
-		KafkaHandler:        handler.NewKafkaHandler(producer, persistConsumer, notifyConsumer),
+		KafkaHandler:        handler.NewKafkaHandler(producer, persistConsumer, notifyConsumer, accessGate),
 		AuthService:         authService,
-		SocketHandler:       socket.NewHandler(hub, authService, producer),
+		SocketHandler:       socket.NewHandler(hub, authService, producer, accessGate),
 		KafkaProducer:       producer,
+
+		stopConsumers:   stopConsumers,
+		persistConsumer: persistConsumer,
+		notifyConsumer:  notifyConsumer,
+		accessGate:      accessGate,
+	}
+}
+
+// Shutdown đóng các Kafka consumer đúng cách (gửi LeaveGroup) trước khi server thoát.
+// Nếu bỏ qua bước này, lần khởi động sau (đặc biệt là "access-gate" — chỉ 1 consumer
+// cho toàn app) sẽ phải chờ hết SessionTimeout (mặc định 30s) mới join lại được group,
+// khiến mọi user bị kẹt ở màn hình chờ trong lúc đó.
+func (a *App) Shutdown() {
+	a.stopConsumers()
+	if err := a.persistConsumer.Close(); err != nil {
+		log.Printf("[kafka] close persist-broadcast consumer error: %v", err)
+	}
+	if err := a.notifyConsumer.Close(); err != nil {
+		log.Printf("[kafka] close notify-unread consumer error: %v", err)
+	}
+	if err := a.accessGate.Close(); err != nil {
+		log.Printf("[kafka] close access-gate consumer error: %v", err)
 	}
 }

@@ -62,6 +62,10 @@ func (p *PersistBroadcastConsumer) Start(ctx context.Context) {
 
 func (p *PersistBroadcastConsumer) Stats() kafka.ReaderStats { return p.consumer.Stats() }
 
+// Close đóng reader — gửi LeaveGroup cho broker để group được rebalance ngay, tránh
+// lần khởi động sau phải chờ hết SessionTimeout (mặc định 30s) mới nhận lại được partition.
+func (p *PersistBroadcastConsumer) Close() error { return p.consumer.Close() }
+
 func (p *PersistBroadcastConsumer) handle(ctx context.Context, m kafka.Message) error {
 	var evt MessageEvent
 	if err := json.Unmarshal(m.Value, &evt); err != nil {

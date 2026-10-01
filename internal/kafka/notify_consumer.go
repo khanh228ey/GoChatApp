@@ -30,6 +30,9 @@ func (n *NotifyConsumer) Start(ctx context.Context) {
 
 func (n *NotifyConsumer) Stats() kafka.ReaderStats { return n.consumer.Stats() }
 
+// Close đóng reader — gửi LeaveGroup cho broker để group được rebalance ngay.
+func (n *NotifyConsumer) Close() error { return n.consumer.Close() }
+
 // HandledCount trả về tổng số message consumer này đã xử lý — dùng cho trang debug.
 func (n *NotifyConsumer) HandledCount() int64 { return n.handled.Load() }
 

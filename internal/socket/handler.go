@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"log"
 	"net/http"
+	"sync/atomic"
 	"time"
 
 	kafkapkg "go_service/internal/kafka"
@@ -28,11 +29,12 @@ type Handler struct {
 	hub         *Hub
 	authService *service.AuthService // Dùng để xác thực token từ query param
 	producer    *kafkapkg.Producer   // Publish tin nhắn lên Kafka thay vì lưu DB trực tiếp
+	accessGate  *kafkapkg.AccessGate // Giới hạn số user online cùng lúc (xem internal/kafka/access_gate.go)
 }
 
-// NewHandler tạo handler mới, inject Hub, AuthService và Kafka producer.
-func NewHandler(hub *Hub, authService *service.AuthService, producer *kafkapkg.Producer) *Handler {
-	return &Handler{hub: hub, authService: authService, producer: producer}
+// NewHandler tạo handler mới, inject Hub, AuthService, Kafka producer và AccessGate.
+func NewHandler(hub *Hub, authService *service.AuthService, producer *kafkapkg.Producer, accessGate *kafkapkg.AccessGate) *Handler {
+	return &Handler{hub: hub, authService: authService, producer: producer, accessGate: accessGate}
 }
 
 // HandleWebSocket là endpoint GET /ws?token=xxx
@@ -58,29 +60,69 @@ func (h *Handler) HandleWebSocket(c *gin.Context) {
 		return
 	}
 
-	// Bước 3: Tạo Client và đăng ký vào Hub
+	// Bước 3: Tạo Client, chạy WritePump ngay (an toàn dù chưa được đăng ký vào Hub) —
+	// việc "vào Hub" (được coi là online, nhận/gửi chat) chỉ xảy ra SAU KHI AccessGate cấp slot.
 	client := &Client{
 		UserID: userID,
 		conn:   conn,
 		send:   make(chan []byte, 256),
 	}
+	go client.WritePump()
 
-	h.hub.RegisterClient(client)
+	// Bước 4: Xin 1 slot từ AccessGate (đi qua Kafka). Nếu hết chỗ, client nhận "waiting"
+	// và chỉ vào Hub khi có người khác rời đi giải phóng slot.
+	var granted atomic.Bool
+	connCtx, cancelConn := context.WithCancel(context.Background())
+
+	h.sendStatus(client, WsTypeWaiting)
+	waitCh := h.accessGate.RequestAccess(connCtx, userID)
+	go func() {
+		select {
+		case <-waitCh:
+			if granted.CompareAndSwap(false, true) {
+				h.hub.RegisterClient(client)
+				h.sendStatus(client, WsTypeAccessGranted)
+			}
+		case <-connCtx.Done():
+			// Connection đã đóng trước khi kịp được cấp slot — không làm gì thêm.
+		}
+	}()
+
 	defer func() {
-		h.hub.UnregisterClient(client)
+		cancelConn() // đánh thức goroutine chờ ở trên nếu còn đang chờ, tránh leak
+
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		h.accessGate.Release(releaseCtx, userID)
+		cancel()
+
+		if granted.Load() {
+			h.hub.UnregisterClient(client) // đóng send channel qua Hub
+		} else {
+			close(client.send) // chưa từng được Hub quản lý → tự đóng để WritePump kết thúc
+		}
 		conn.Close()
 	}()
 
-	// Bước 4: Chạy WritePump trong goroutine — gửi message từ Hub tới client
-	go client.WritePump()
-
-	// Bước 5: Vòng lặp đọc message từ client
+	// Bước 5: Vòng lặp đọc message từ client — luôn đọc để phát hiện disconnect ngay cả
+	// khi đang chờ, nhưng bỏ qua nội dung gửi lên trước khi được cấp slot.
 	for {
 		_, rawMsg, err := conn.ReadMessage()
 		if err != nil {
 			return // Client ngắt kết nối
 		}
+		if !granted.Load() {
+			continue
+		}
 		h.publishIncoming(userID, rawMsg)
+	}
+}
+
+// sendStatus gửi 1 WsPayload chỉ có Type (waiting/access_granted...) tới client.
+func (h *Handler) sendStatus(client *Client, t WsMessageType) {
+	data, _ := json.Marshal(WsPayload{Type: t})
+	select {
+	case client.send <- data:
+	default:
 	}
 }
 

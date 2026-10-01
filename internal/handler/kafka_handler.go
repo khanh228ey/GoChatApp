@@ -14,17 +14,20 @@ type KafkaHandler struct {
 	producer        *kafkapkg.Producer
 	persistConsumer *kafkapkg.PersistBroadcastConsumer
 	notifyConsumer  *kafkapkg.NotifyConsumer
+	accessGate      *kafkapkg.AccessGate
 }
 
 func NewKafkaHandler(
 	producer *kafkapkg.Producer,
 	persistConsumer *kafkapkg.PersistBroadcastConsumer,
 	notifyConsumer *kafkapkg.NotifyConsumer,
+	accessGate *kafkapkg.AccessGate,
 ) *KafkaHandler {
 	return &KafkaHandler{
 		producer:        producer,
 		persistConsumer: persistConsumer,
 		notifyConsumer:  notifyConsumer,
+		accessGate:      accessGate,
 	}
 }
 
@@ -34,6 +37,8 @@ func NewKafkaHandler(
 func (h *KafkaHandler) GetStatus(c *gin.Context) {
 	persistStats := h.persistConsumer.Stats()
 	notifyStats := h.notifyConsumer.Stats()
+	accessStats := h.accessGate.Stats()
+	activeUsers, waitingUsers := h.accessGate.Snapshot()
 
 	c.JSON(http.StatusOK, gin.H{
 		"topic": persistStats.Topic,
@@ -58,6 +63,14 @@ func (h *KafkaHandler) GetStatus(c *gin.Context) {
 				"errors":         notifyStats.Errors,
 				"handled_total":  h.notifyConsumer.HandledCount(),
 			},
+		},
+		"access_gate": gin.H{
+			"topic":          accessStats.Topic,
+			"max_slots":      kafkapkg.MaxActiveSlots,
+			"active_users":   activeUsers,
+			"waiting_users":  waitingUsers,
+			"messages_total": accessStats.Messages,
+			"lag":            accessStats.Lag,
 		},
 	})
 }
